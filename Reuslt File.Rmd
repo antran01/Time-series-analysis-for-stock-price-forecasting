@@ -1,0 +1,259 @@
+---
+title: "Result File"
+author: "An Tran"
+date: "2024-01-26"
+output: html_document
+---
+***
+<style>
+
+body {
+  font-family: "Georgia";
+  text-align: justify;
+}
+
+p {
+  font-family: "Georgia";
+  text-indent: 30px;
+  color: black;
+  font-style: normal;
+}
+</style>
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Import library
+```{r}
+#install.packages(quantmod)
+#install.packages(forecast)
+#install.packages(TTR)
+#install.packages(tseries)
+#install.packages(ggplot2)
+#install.packages(tidyquant)
+library(quantmod)
+library(forecast)
+library(TTR)
+library(tseries)
+library(ggplot2)
+library(tidyquant)
+library(lmtest)
+library(dplyr)
+library(stats)
+```
+# Import Stock Data
+
+```{r}
+# Load historical stock price data
+symbol <- "MARA" 
+start_date <- "2012-05-05"
+end_date <- "2023-12-31"
+
+# Fetch historical stock price data using tidyquant
+stock_data <- tq_get(symbol, from = start_date, to = end_date, daily.return = "Cl")
+
+# Handle missing values or outliers
+stock_data <- stock_data %>%
+  na.omit()
+
+# Define date range
+start_date <- as.Date("2021-01-01")
+end_date <- as.Date("2023-06-30")
+
+# Select rows within the date range and include all columns
+selected_rows <- stock_data %>%
+  filter(as.Date(date) >= start_date & as.Date(date) <= end_date)
+
+data <- selected_rows %>%
+  tq_transmute(select = adjusted,
+               mutate_fun = to.daily,
+               indexAt = "endof")
+
+# Print the first few rows of data
+print(head(data,100))
+print(head(stock_data,1))
+```
+
+# Transform the data by using logarithm return
+
+```{r}
+data$adjusted=as.numeric(gsub(',', '', data$adjusted))
+
+data <- data.frame(data$date, data$adjusted)
+df <- na.omit(data)
+df$date <- df$data.date
+df$price <- df$data.adjusted
+df$return <- c(0, diff(log(df$price)))
+
+```
+# Import data from Jul-Aug 2023 (using for compare only)
+
+```{r} 
+# Define date range
+new_start_date <- as.Date("2023-07-01")
+new_end_date <- as.Date("2023-08-14")
+
+# Select rows within the date range and include all columns
+new_selected_rows <- stock_data %>%
+  filter(as.Date(date) >= new_start_date & as.Date(date) <= new_end_date)
+
+#
+new_data <- new_selected_rows %>%
+  tq_transmute(select = adjusted,
+               mutate_fun = to.daily,
+               indexAt = "endof")
+
+# Print the first few rows of data
+print(head(new_data,100))
+print(head(stock_data,1))
+
+new_data$adjusted=as.numeric(gsub(',', '', new_data$adjusted))
+
+new_data <- data.frame(new_data$date, new_data$adjusted)
+new_df <- na.omit(new_data)
+new_df$date <- new_df$new_data.date
+new_df$price <- new_df$new_data.adjusted
+new_df$return <- c(0, diff(log(new_df$price)))
+```
+
+# Explore and Visualize Data
+
+```{r}
+# Plot the time series data (using adjusted price to calculate from now on)
+plot(df$date, df$price, type = "l", col = "black", lwd = 2, xlab = "Date", ylab = "USD", main = "Stock Price of Marathon Digital Holdings, Inc.")
+
+#Log return
+plot(df$date, df$return, type = "l", col = "black", lwd = 2, xlab = "Date", ylab = "Return", main = "Log Return of Marathon Digital Holdings, Inc.")
+```
+
+# Check series is stationary or not
+
+```{r}
+adf.test(df$return)
+```
+# ARIMA
+```{r}
+model <- auto.arima(df$return)
+summary(model)
+```
+
+# ACF and PACF
+
+```{r}
+pacf((df$return), lag=12, main = "PACF for Return, Marathon Digital Holdings, Inc.")
+acf((df$return),lag=12, main = "ACF for Return, Marathon Digital Holdings, Inc.")
+```
+
+#AIC BIC
+
+```{r}
+AIC(model)
+BIC(model)
+```
+
+# Check residuals
+
+```{r}
+residuals <- resid(model)
+# Residual plot
+plot(residuals, main = "Residuals Plot")
+
+# Ljung-Box test
+ljung_box_test <- Box.test(residuals, lag = 20, type = "Ljung-Box")
+print(ljung_box_test)
+```
+
+# Dynamic Forecast
+
+```{r}
+ar23 <- arima(df$return, order = c(2, 0, 3))
+dynamic_fc <- predict(ar23, n.ahead = 30)
+head(dynamic_fc)
+```
+
+# Static Forecast
+
+```{r}
+static_fc = ar23$coef[3] + ar23$coef[1] * df$return[1:626] + ar23$coef[2] * df$return[1:626]
+
+# Use the last value in the static forecast as the starting point for the next 30 days
+last_value <- tail(static_fc, 1)
+extended_static_fc <- numeric(30)
+
+# Forecast the next 30 days using the last value from the static forecast
+for (i in 1:30) {
+  extended_static_fc[i] <- ar23$coef[3] + ar23$coef[1] * last_value + ar23$coef[2] * last_value
+  last_value <- extended_static_fc[i]
+}
+
+# Convert 'extended_static_fc' into a time series object
+extended_static_fc_ts <- ts(extended_static_fc, start = end(df$date), frequency = 1)
+
+# Print the extended static forecast for the next 30 days as a time series
+cat("\nExtended Static Forecast (Next 30 days):\n")
+print(extended_static_fc_ts)
+head(extended_static_fc_ts)
+```
+
+# Combine data into 1 data frame
+
+```{r}
+# Create a new data frame by combining the original data frame with the time series
+combined_df <- cbind(new_df, TimeSeries = dynamic_fc, TimeSeries = extended_static_fc_ts)
+
+# Print the first few rows of the combined data frame
+#print(head(combined_df))
+
+# Print specific columns from the combined data frame
+#print(combined_df[, c("date", "return", "TimeSeries.pred", "TimeSeries")])
+print(combined_df %>%
+      select('Date' = date, 'Actual value' = return, `Dynamic Forecast` = TimeSeries.pred, `Static Forecast` = TimeSeries))
+```
+
+# Plot dynamic forecast vs actual value
+
+```{r}
+par(lwd = 1, cex.axis = 1)
+
+# Create a line plot with reduced x-axis labels
+plot(combined_df$date, combined_df$return, type = "l", xlab = "", ylab = "", main = "Actual and Forecast for Return, Marathon Holdings Inc.", xaxt = "n")
+
+# Add the blue line
+lines(combined_df$date, combined_df$TimeSeries.pred, col = "blue")
+
+# Customize the x-axis with fewer labels
+axis(1, at = seq(from = min(combined_df$date), to = max(combined_df$date), length.out = 6), labels = seq(from = min(combined_df$date), to = max(combined_df$date), length.out = 6))
+
+# Customize the y-axis with fewer labels
+axis(1, at = seq(from = min(combined_df$return), to = max(combined_df$return), length.out = 6), labels = seq(from = min(combined_df$return), to = max(combined_df$return), length.out = 6))
+
+# Add a legend
+legend("topright", legend = c("Actual", "Dynamic"), col = c("black", "blue"), lty=1)
+```
+
+# MSE, ME, MAE for Dynamic Forecast
+
+```{r}
+predicted_values <- dynamic_fc$pred
+
+# Assuming 'df$return' is your observed time series
+observed_values <- df$return
+
+# Ensure both vectors have the same length
+min_length <- min(length(observed_values), length(predicted_values))
+observed_values <- observed_values[1:min_length]
+predicted_values <- predicted_values[1:min_length]
+
+# Calculate Mean Squared Error (MSE)
+mse <- mean((observed_values - predicted_values)^2)
+cat("Dynamic Forecast Mean Squared Error (MSE):", mse, "\n")
+
+# Calculate Mean Absolute Error (MAE)
+mae <- mean(abs(observed_values - predicted_values))
+cat("Dynamic Forecast Mean Absolute Error (MAE):", mae, "\n")
+
+# Calculate Mean Error (ME)
+me <- mean(observed_values - predicted_values)
+cat("Dynamic Forecast Mean Error (ME):", me, "\n")
+```
